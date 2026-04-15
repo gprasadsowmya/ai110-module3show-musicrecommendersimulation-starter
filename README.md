@@ -11,23 +11,105 @@ Your goal is to:
 - Evaluate what your system gets right and wrong
 - Reflect on how this mirrors real world AI recommenders
 
-Replace this paragraph with your own summary of what your version does.
+Real-world recommenders like Spotify or YouTube use two main strategies: collaborative filtering (users who liked X also liked Y, so recommend Y) and content-based filtering (X has these audio properties, here are songs with similar properties). Most production systems combine both. This version is purely content-based. It stores a user preference profile with a target genre, mood, energy level, and valence. For each song in the catalog, it computes a score based on how well the song matches those preferences. Categorical features like genre and mood are checked for exact matches and given higher weight. Numerical features like energy and valence are scored by proximity. a song with energy 0.41 scores higher than one with 0.91 for a user who wants 0.40, not because low is better, but because closer is better. The top-scoring songs are returned as recommendations.
 
 ---
 
 ## How The System Works
 
-Explain your design in plain language.
+### Song features
 
-Some prompts to answer:
+Each `Song` stores 10 fields loaded from `data/songs.csv`:
 
-- What features does each `Song` use in your system
-  - For example: genre, mood, energy, tempo
-- What information does your `UserProfile` store
-- How does your `Recommender` compute a score for each song
-- How do you choose which songs to recommend
+| Field | Type | What it captures |
+|---|---|---|
+| `genre` | string | Musical category (pop, lofi, rock, jazz, etc.) |
+| `mood` | string | Listening context (happy, chill, intense, focused, etc.) |
+| `energy` | float 0–1 | Intensity — 0.28 is ambient calm, 0.93 is gym-level loud |
+| `valence` | float 0–1 | Positivity — high values are upbeat, low values are darker |
+| `danceability` | float 0–1 | Rhythmic drive and beat strength |
+| `acousticness` | float 0–1 | How acoustic vs. electronic the song sounds |
+| `tempo_bpm` | float | Beats per minute |
 
-You can include a simple diagram or bullet list if helpful.
+`id`, `title`, and `artist` are also stored but not used in scoring.
+
+### User profile
+
+`UserProfile` stores four preference fields:
+
+- `favorite_genre` — the genre to prioritize (e.g. `"lofi"`)
+- `favorite_mood` — the mood to prioritize (e.g. `"chill"`)
+- `target_energy` — a 0–1 float for how intense the user wants songs to feel
+- `likes_acoustic` — boolean; boosts songs with high acousticness when `True`
+
+### Algorithm Recipe
+
+**Step 1 — Load the catalog**
+Read `data/songs.csv` into a list of song dictionaries. Each row becomes one candidate.
+
+**Step 2 — Receive a user profile**
+Accept a `user_prefs` dictionary with five keys:
+`genre`, `mood`, `target_energy`, `target_valence`, `likes_acoustic`.
+
+**Step 3 — Score every song**
+For each song, call `score_song(user_prefs, song)` which computes:
+
+```
+score = (0.40 × genre_match)
+      + (0.30 × mood_match)
+      + (0.20 × (1 − |song.energy − user.target_energy|))
+      + (0.10 × acousticness_bonus)
+```
+
+Where:
+- `genre_match` = 1 if `song.genre == user.genre`, else 0
+- `mood_match` = 1 if `song.mood == user.mood`, else 0
+- Energy uses **proximity scoring** — score is 1.0 on exact match, decreases as the gap grows in either direction; a song is not rewarded for being high or low, only for being *close*
+- `acousticness_bonus` = `song.acousticness` if `likes_acoustic` is `True`, else `1 − song.acousticness`
+
+Maximum possible score is 1.0. The function also returns a list of human-readable reason strings explaining which terms contributed.
+
+**Step 4 — Rank and return**
+Sort all scored songs by score descending. Return the top `k` (default 5).
+
+### Sample output
+
+Each profile can be run individually:
+
+```bash
+python -m src.main pop    # High-Energy Pop
+python -m src.main lofi   # Chill Lofi
+python -m src.main rock   # Deep Intense Rock
+python -m src.main        # all three in sequence
+```
+
+**High-Energy Pop** — genre: pop | mood: happy | energy: 0.85 | acoustic: no
+
+![High-Energy Pop recommendations](docs/output_high_energy_pop.png)
+
+---
+
+**Chill Lofi** — genre: lofi | mood: chill | energy: 0.38 | acoustic: yes
+
+![Chill Lofi recommendations](docs/output_chill_lofi.png)
+
+---
+
+**Deep Intense Rock** — genre: rock | mood: intense | energy: 0.91 | acoustic: no
+
+![Deep Intense Rock recommendations](docs/output_deep_intense_rock.png)
+
+---
+
+### Known biases and limitations
+
+| Bias | Why it happens | Effect |
+|---|---|---|
+| Genre dominance | Genre carries 40% of the score — the single largest weight | A perfect genre match with wrong mood (0.40) outscores a wrong genre with perfect mood + energy + acousticness (0.60 max). Great songs in adjacent genres get buried. |
+| Mood binary penalty | Mood is exact-match only — "chill" and "relaxed" score identically to "chill" vs "metal" | Semantically similar moods are treated as total misses, which is wrong |
+| Valence not scored | `target_valence` is in the profile but the current formula does not use it | A user who wants dark/low-valence songs will still receive upbeat songs if the genre and mood match |
+| No diversity enforcement | The ranker returns the top k by score with no diversity check | If 4 lofi songs all score 0.90, the top 5 will be nearly identical — no variety |
+| Catalog size | 20 songs total | For profiles targeting underrepresented genres (e.g. classical, reggae), there is only one matching song — recommendations are thin by default |
 
 ---
 
@@ -115,7 +197,7 @@ Combines reflection and model card framing from the Module 3 guidance. :contentR
 
 Give your recommender a name, for example:
 
-> VibeFinder 1.0
+> VibeMatch 1.0
 
 ---
 
